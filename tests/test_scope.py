@@ -9,8 +9,9 @@ from pathlib import Path
 import httpx
 
 from reconkit.cli import main
+from reconkit.discover import cname_lookup
 from reconkit.fingerprint import match
-from reconkit.probe import Limiter, make_clients, probe_name
+from reconkit.probe import Limiter, cert_summary, make_clients, probe_name
 from reconkit.report import compare
 from reconkit.scope import ScopeError, load_scope, parse_scope, require_in_scope
 
@@ -143,6 +144,29 @@ class ReportFeatures(unittest.TestCase):
             {"host": "a.example.com", "changes": {"tech": {"old": ["nginx"], "new": ["PHP", "nginx"]}}},
             {"host": "b.example.com", "changes": {"status": {"old": "ok", "new": "unreachable"}}},  # no status_code noise
         ])
+
+    def test_cert_summary(self):
+        cert = {"issuer": ((("countryName", "US"),), (("organizationName", "Let's Encrypt"),), (("commonName", "R11"),)),
+                "notAfter": "Feb  3 12:00:00 2027 GMT",
+                "subjectAltName": (("DNS", "www.example.com"), ("DNS", "*.Example.com."), ("IP Address", "1.2.3.4"))}
+        self.assertEqual(cert_summary(cert), {"issuer": "Let's Encrypt", "expires": "2027-02-03",
+                                              "san": ["www.example.com", "*.example.com"]})
+
+    def test_dangling_cname(self):
+        answers = {
+            "old.example.com": {"Status": 3, "Answer": [{"type": 5, "data": "app.azurewebsites.net."}]},
+            "www.example.com": {"Status": 0, "Answer": [{"type": 5, "data": "cdn.example.net."}, {"type": 1, "data": "1.2.3.4"}]},
+        }
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=answers[r.url.params["name"]]))
+
+        async def go(host):
+            async with httpx.AsyncClient(transport=transport) as c:
+                return await cname_lookup(host, c, "https://doh.test/dns-query", asyncio.Semaphore(1))
+
+        self.assertEqual(asyncio.run(go("old.example.com")), {"cname": ["app.azurewebsites.net"], "dangling": True,
+                                                               "takeover_candidate": "Azure App Service", "error": None})
+        live = asyncio.run(go("www.example.com"))
+        self.assertEqual((live["cname"], live["dangling"], live["takeover_candidate"]), (["cdn.example.net"], False, None))
 
 
 if __name__ == "__main__":

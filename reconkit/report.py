@@ -65,8 +65,14 @@ def _render_md(result: dict) -> str:
         "- Scope: " + ", ".join(f"`{e}`" for e in result.get("scope", [])),
         "- Settings: " + ", ".join(f"{k}={v}" for k, v in s.items()),
         "- Hosts: " + ", ".join(f"{counts[k]} {k}" for k in STATUSES),
-        f"- Dropped crt.sh entries: {result.get('dropped_entries', 0)}", "",
+        f"- Dropped crt.sh entries: {result.get('dropped_entries', 0)}",
     ]
+    if result.get("san_names"):
+        lines.append("- Names found only in certificates: " + ", ".join(result["san_names"]))
+    doh_errors = sum(1 for h in hosts if (h.get("dns") or {}).get("error"))
+    if doh_errors:
+        lines.append(f"- CNAME lookups failed: {doh_errors} (see report.json)")
+    lines.append("")
     if by["ok"]:
         lines += ["## Live hosts", "",
                   "| Host | Code | Title | Server | Tech | TLS | Final URL |",
@@ -81,6 +87,22 @@ def _render_md(result: dict) -> str:
                     for h in by["ok"] for tech, ev in sorted((h.get("tech_evidence") or {}).items())]
         if evidence:
             lines += ["## Fingerprint evidence", "", *evidence, ""]
+        certs = []
+        for h in by["ok"]:
+            if t := h.get("tls"):
+                san = t["san"][:10] + ([f"+{len(t['san']) - 10} more"] if len(t["san"]) > 10 else [])
+                certs.append(f"- {h['host']} — issuer {t['issuer'] or '-'}, expires {t['expires'] or '-'}, SANs: {', '.join(san) or '-'}")
+        if certs:
+            lines += ["## TLS certificates", "", *certs, ""]
+    dangling = [h for h in hosts if (h.get("dns") or {}).get("dangling")]
+    if dangling:
+        lines += ["## Dangling CNAMEs", "",
+                  "_The CNAME target doesn't exist (NXDOMAIN). On a known service this is a takeover candidate: verify by hand, never assume._", ""]
+        for h in dangling:
+            d = h["dns"]
+            label = f"takeover candidate ({d['takeover_candidate']})" if d["takeover_candidate"] else "unknown service"
+            lines.append(f"- {h['host']} → {' → '.join(d['cname'])} — {label}")
+        lines.append("")
     if "changes" in result:
         lines += _render_changes(result["changes"])
     if by["unreachable"]:

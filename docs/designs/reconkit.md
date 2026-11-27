@@ -65,6 +65,8 @@ Boundary rule: detecting exposure indicators, reported as "candidate", is in; ex
 
 ## Open Questions
 - Resolved in Eng Review: wildcard never covers the apex (R3-10); crt.sh failure behavior (R3-3).
+- Resolved in v1.2: in-scope, non-wildcard SAN names that crt.sh didn't list get one extra probe round. Names found in that round's certificates are listed but not followed, so the run can't chain on.
+- Resolved in v1.3: the DoH query uses `type=A`, not `type=CNAME`. One request returns the CNAME chain plus the NXDOMAIN status of its end, so dangling detection needs no second lookup. Every in-scope name is looked up, including ones the system resolver can't resolve, since those are exactly where dangling CNAMEs show up.
 - Resolved in v1.1: a host missing from this run is reported at once as "Not seen this run", not as "Removed", with no state kept between runs. crt.sh is historical, so a missing name usually means crt.sh returned a partial answer, not that the host is gone. A host still listed but now failing shows up as a status change (e.g. ok → unreachable), so it stays separate from "not seen".
 
 ## Success Criteria

@@ -7,6 +7,7 @@ import re
 import ssl
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -72,6 +73,17 @@ def tls_error(exc: BaseException) -> str | None:
     return None
 
 
+def cert_summary(cert: dict) -> dict:
+    """Issuer, expiry date and DNS SANs from ssl getpeercert(), which is only filled in for verified certificates."""
+    issuer = dict(attr for rdn in cert.get("issuer", ()) for attr in rdn)
+    expires = cert.get("notAfter")
+    return {
+        "issuer": issuer.get("organizationName") or issuer.get("commonName"),
+        "expires": datetime.fromtimestamp(ssl.cert_time_to_seconds(expires), timezone.utc).strftime("%Y-%m-%d") if expires else None,
+        "san": [v.lower().rstrip(".") for k, v in cert.get("subjectAltName", ()) if k == "DNS"],
+    }
+
+
 def _ordered(addresses: list[str]) -> list[str]:
     v4 = [a for a in addresses if ":" not in a]
     return (v4 + [a for a in addresses if ":" in a])[:2]  # first address, plus one fallback
@@ -81,8 +93,9 @@ def _error_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}".strip().rstrip(":") or type(exc).__name__
 
 
-async def _fetch(client: httpx.AsyncClient, url: str, ip: str, limiter: Limiter) -> tuple[httpx.Response, bytes]:
-    """GET url while connecting to ip: URL host = ip, Host header and SNI = the real hostname."""
+async def _fetch(client: httpx.AsyncClient, url: str, ip: str, limiter: Limiter, certs: dict) -> tuple[httpx.Response, bytes]:
+    """GET url while connecting to ip: URL host = ip, Host header and SNI = the real hostname.
+    Records the verified certificate of each hostname in certs, read from the same connection."""
     parts = urlsplit(url)
     host = parts.hostname or ""
     port = f":{parts.port}" if parts.port else ""
@@ -92,6 +105,11 @@ async def _fetch(client: httpx.AsyncClient, url: str, ip: str, limiter: Limiter)
     await limiter.wait_turn()
     async with limiter.sem:
         response = await client.send(request, stream=True)
+        if parts.scheme == "https" and host not in certs:
+            stream = response.extensions.get("network_stream")
+            ssl_object = stream.get_extra_info("ssl_object") if stream else None
+            if cert := (ssl_object.getpeercert() if ssl_object else None):  # {} when verification was off
+                certs[host] = cert_summary(cert)
         body = bytearray()
         try:
             async for chunk in response.aiter_bytes():
@@ -103,7 +121,7 @@ async def _fetch(client: httpx.AsyncClient, url: str, ip: str, limiter: Limiter)
     return response, bytes(body[:MAX_BODY])
 
 
-async def _follow(client, start_url, addresses, scope, limiter, resolve, attempts):
+async def _follow(client, start_url, addresses, scope, limiter, resolve, attempts, certs):
     """Fetch start_url and follow redirects by hand. Returns (last_response, body, last_url, error)."""
     url, ips, current = start_url, addresses, urlsplit(start_url).hostname
     for hop in range(MAX_REDIRECTS + 1):
@@ -111,7 +129,7 @@ async def _follow(client, start_url, addresses, scope, limiter, resolve, attempt
         error: BaseException | None = None
         for ip in _ordered(ips):
             try:
-                response, body = await _fetch(client, url, ip, limiter)
+                response, body = await _fetch(client, url, ip, limiter, certs)
                 break
             except httpx.HTTPError as e:
                 error = e
@@ -168,15 +186,16 @@ async def probe_host(host: str, addresses: list[str], scope: Scope, limiter: Lim
     retry unverified; plain http only when the https connection itself fails."""
     verified, unverified = clients
     entry = {"host": host, "addresses": addresses, "status": "unreachable", "reason": None, "attempts": [],
-             "final_url": None, "status_code": None, "title": None, "server": None, "tls_error": None, "tech": [],
+             "final_url": None, "status_code": None, "title": None, "server": None, "tls_error": None, "tls": None, "tech": [],
              "tech_evidence": {}}
-    attempts = entry["attempts"]
-    response, body, url, error = await _follow(verified, f"https://{host}/", addresses, scope, limiter, resolve, attempts)
+    attempts, certs = entry["attempts"], {}
+    response, body, url, error = await _follow(verified, f"https://{host}/", addresses, scope, limiter, resolve, attempts, certs)
     if response is None and error is not None and tls_error(error):
         entry["tls_error"] = tls_error(error)
-        response, body, url, error = await _follow(unverified, f"https://{host}/", addresses, scope, limiter, resolve, attempts)
+        response, body, url, error = await _follow(unverified, f"https://{host}/", addresses, scope, limiter, resolve, attempts, certs)
     if response is None:
-        response, body, url, error = await _follow(verified, f"http://{host}/", addresses, scope, limiter, resolve, attempts)
+        response, body, url, error = await _follow(verified, f"http://{host}/", addresses, scope, limiter, resolve, attempts, certs)
+    entry["tls"] = certs.get(host)
     if response is None:
         entry["reason"] = _error_text(error) if error else "no response"
         return entry
@@ -195,16 +214,18 @@ async def probe_host(host: str, addresses: list[str], scope: Scope, limiter: Lim
 
 
 async def probe_name(name: str, scope: Scope, limiter: Limiter,
-                     clients: tuple[httpx.AsyncClient, httpx.AsyncClient], resolve: Resolver) -> dict:
-    """Scope check, resolve, refuse non-public addresses, then probe. The single entry point per host."""
+                     clients: tuple[httpx.AsyncClient, httpx.AsyncClient], resolve: Resolver,
+                     lookup_cname: Callable[[str], Awaitable[dict]] | None = None) -> dict:
+    """Scope check, CNAME lookup, resolve, refuse non-public addresses, then probe. The single entry point per host."""
     base = {"host": name, "addresses": [], "status": "refused", "reason": None, "attempts": [],
-            "final_url": None, "status_code": None, "title": None, "server": None, "tls_error": None, "tech": [], "tech_evidence": {}}
+            "final_url": None, "status_code": None, "title": None, "server": None, "tls_error": None, "tls": None, "tech": [], "tech_evidence": {}, "dns": None}
     if not scope.allows(name):
         return {**base, "reason": "out of scope"}
+    base["dns"] = await lookup_cname(name) if lookup_cname else None  # also for names that won't resolve
     addresses = await resolve(name)
     if not addresses:
         return {**base, "status": "unresolved"}
     private = [a for a in addresses if not is_public(a)]
     if private:
         return {**base, "addresses": addresses, "reason": f"non-public address ({private[0]})"}
-    return await probe_host(name, addresses, scope, limiter, clients, resolve)
+    return {**await probe_host(name, addresses, scope, limiter, clients, resolve), "dns": base["dns"]}
