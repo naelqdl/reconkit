@@ -16,5 +16,8 @@ authors = [{name = "naelqdl"}]
 [project.scripts]
 reconkit = "reconkit.cli:main"
 
+[project.gui-scripts]
+reconkit-gui = "reconkit.gui:main"
+
 [tool.setuptools]
 packages = ["reconkit"]
