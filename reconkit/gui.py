@@ -130,8 +130,42 @@ class App:
         root.title("reconkit")
         scale = scale or text_scale()
         self.p = p = theme(root, theme_name or system_theme(), scale)
-        f = ttk.Frame(root, padding=(24, 16, 24, 16))
-        f.pack(fill="both", expand=True)
+        outer = ttk.Frame(root)
+        outer.pack(fill="both", expand=True)
+        # the form scrolls only when the screen is too short for it (large text, small laptop screens)
+        canvas = tk.Canvas(outer, bg=p["bg"], highlightthickness=0, borderwidth=0)
+        vbar = ttk.Scrollbar(outer, command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        f = ttk.Frame(canvas, padding=(24, 16, 24, 16))
+        form = canvas.create_window(0, 0, window=f, anchor="nw")
+
+        def fit(_=None):
+            need, have = f.winfo_reqheight(), canvas.winfo_height()
+            canvas.itemconfigure(form, width=canvas.winfo_width(), height=max(need, have))
+            canvas.configure(scrollregion=(0, 0, 0, max(need, have)))
+            if need > have and not vbar.winfo_ismapped():
+                vbar.pack(side="right", fill="y", before=canvas)
+            elif need <= have and vbar.winfo_ismapped():
+                vbar.pack_forget()
+
+        def wheel(e):  # text boxes scroll themselves
+            if vbar.winfo_ismapped() and isinstance(e.widget, tk.Misc) and e.widget.winfo_class() != "Text":
+                canvas.yview_scroll(-1 if e.num == 4 or getattr(e, "delta", 0) > 0 else 1, "units")
+
+        def reveal(e):  # keyboard focus never lands on a control scrolled out of view
+            w = e.widget
+            if not vbar.winfo_ismapped() or not isinstance(w, tk.Misc) or w is canvas:
+                return
+            top, total = w.winfo_rooty() - f.winfo_rooty(), max(f.winfo_height(), 1)
+            first, last = canvas.yview()
+            if top < first * total or top + w.winfo_height() > last * total:
+                canvas.yview_moveto(max(0, top - 24) / total)
+
+        canvas.bind("<Configure>", fit)
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            root.bind_all(seq, wheel)
+        root.bind_all("<FocusIn>", reveal)
         f.columnconfigure(1, weight=1)
         self.v = {k: tk.StringVar(value=d) for k, d in [
             ("domain", ""), ("scope", "scope.txt"), ("out", "out"), ("concurrency", "10"), ("rate", "5"),
@@ -233,12 +267,12 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.update_idletasks()
         # very large text on a short screen: step the text down until the form fits (the log may shrink to half)
-        if scale > 1 and root.winfo_reqheight() - self.log.winfo_reqheight() // 2 > root.winfo_screenheight() - 120:
-            f.destroy()
+        if scale > 1 and f.winfo_reqheight() - self.log.winfo_reqheight() // 2 > root.winfo_screenheight() - 120:
+            outer.destroy()
             return self.__init__(root, theme_name, max(1.0, scale - 0.25))
         self.domain_entry.focus_set()
-        # in pixels, so it follows display scaling; capped so large text still fits the screen (the log shrinks first)
-        w, h = min(root.winfo_reqwidth(), root.winfo_screenwidth() - 40), min(root.winfo_reqheight(), root.winfo_screenheight() - 120)
+        # in pixels, so it follows display scaling; capped so large text still fits the screen
+        w, h = min(f.winfo_reqwidth(), root.winfo_screenwidth() - 40), min(f.winfo_reqheight(), root.winfo_screenheight() - 120)
         root.minsize(w, h)
         root.geometry(f"{w}x{h}")
         if Path(self.v["scope"].get()).is_file():
