@@ -14,7 +14,7 @@ import httpx
 
 from . import __version__
 from .fingerprint import match
-from .scope import Scope, is_ip, is_public, normalize
+from .scope import Scope, is_ip, is_public, normalize, origin_of
 
 MAX_REDIRECTS = 5
 MAX_BODY = 256 * 1024
@@ -27,11 +27,20 @@ Resolver = Callable[[str], Awaitable[list[str]]]
 class Limiter:
     """Caps requests in flight (the semaphore is shared with DNS) and paces requests to target hosts."""
 
-    def __init__(self, concurrency: int, rate: float) -> None:
+    def __init__(self, concurrency: int, rate: float, budget: int = 100) -> None:
         self.sem = asyncio.Semaphore(concurrency)
         self._interval = 1.0 / rate if rate > 0 else 0.0
         self._next = 0.0
         self._lock = asyncio.Lock()
+        self.budget = budget  # max check requests (active modules and port connects) per host per run
+        self.spent: dict[str, int] = {}
+
+    def charge(self, host: str) -> bool:
+        """Count one check request against host's budget; False once the budget is used up."""
+        if self.spent.get(host, 0) >= self.budget:
+            return False
+        self.spent[host] = self.spent.get(host, 0) + 1
+        return True
 
     async def wait_turn(self) -> None:
         if not self._interval:
@@ -93,15 +102,16 @@ def _error_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}".strip().rstrip(":") or type(exc).__name__
 
 
-async def _fetch(client: httpx.AsyncClient, url: str, ip: str, limiter: Limiter, certs: dict) -> tuple[httpx.Response, bytes]:
+async def _fetch(client: httpx.AsyncClient, url: str, ip: str, limiter: Limiter, certs: dict, *,
+                 method: str = "GET", headers: dict | None = None) -> tuple[httpx.Response, bytes]:
     """GET url while connecting to ip: URL host = ip, Host header and SNI = the real hostname.
     Records the verified certificate of each hostname in certs, read from the same connection."""
     parts = urlsplit(url)
     host = parts.hostname or ""
     port = f":{parts.port}" if parts.port else ""
     pinned = parts._replace(netloc=(f"[{ip}]" if ":" in ip else ip) + port).geturl()
-    ext = {"sni_hostname": host} if parts.scheme == "https" else {}
-    request = client.build_request("GET", pinned, headers={"Host": host + port}, extensions=ext)
+    ext = {"sni_hostname": host} if parts.scheme == "https" and not is_ip(host) else {}
+    request = client.build_request(method, pinned, headers={**(headers or {}), "Host": host + port}, extensions=ext)
     await limiter.wait_turn()
     async with limiter.sem:
         response = await client.send(request, stream=True)
@@ -187,21 +197,41 @@ async def probe_host(host: str, addresses: list[str], scope: Scope, limiter: Lim
     verified, unverified = clients
     entry = {"host": host, "addresses": addresses, "status": "unreachable", "reason": None, "attempts": [],
              "final_url": None, "status_code": None, "title": None, "server": None, "tls_error": None, "tls": None, "tech": [],
-             "tech_evidence": {}}
+             "tech_evidence": {}, "origin": None, "headers": {}, "cookies": []}
     attempts, certs = entry["attempts"], {}
     response, body, url, error = await _follow(verified, f"https://{host}/", addresses, scope, limiter, resolve, attempts, certs)
     if response is None and error is not None and tls_error(error):
         entry["tls_error"] = tls_error(error)
         response, body, url, error = await _follow(unverified, f"https://{host}/", addresses, scope, limiter, resolve, attempts, certs)
+    scheme = "https"
     if response is None:
+        scheme = "http"
         response, body, url, error = await _follow(verified, f"http://{host}/", addresses, scope, limiter, resolve, attempts, certs)
     entry["tls"] = certs.get(host)
     if response is None:
         entry["reason"] = _error_text(error) if error else "no response"
         return entry
+    _fill(entry, response, body, url)
+    entry["origin"] = f"{scheme}://{host}"
+    return entry
+
+
+def _cookies(set_cookies: list[str]) -> list[dict]:
+    """Cookie names and attributes only; the value can be a session token and never goes in a report."""
+    out = []
+    for raw in set_cookies:
+        first, _, attrs = raw.partition(";")
+        out.append({"name": first.split("=", 1)[0].strip(), "attrs": " ".join(attrs.split())})
+    return out
+
+
+def _fill(entry: dict, response: httpx.Response, body: bytes, url: str) -> None:
+    """Fill an entry's ok fields from the final response (which may be on another in-scope host, see final_url)."""
     html = body.decode(response.encoding or "utf-8", errors="replace")
     evidence = match(response.headers, response.headers.get_list("set-cookie"), html)
     entry.update(
+        headers={k: ", ".join(response.headers.get_list(k)) for k in response.headers.keys() if k != "set-cookie"},
+        cookies=_cookies(response.headers.get_list("set-cookie")),
         status="ok",
         final_url=url,
         status_code=response.status_code,
@@ -210,6 +240,50 @@ async def probe_host(host: str, addresses: list[str], scope: Scope, limiter: Lim
         tech=sorted(evidence),
         tech_evidence=evidence,
     )
+
+
+async def probe_lab(origin: str, addresses: list[str], limiter: Limiter,
+                    clients: tuple[httpx.AsyncClient, httpx.AsyncClient]) -> dict:
+    """--lab: probe one exact origin from the scope file (private addresses allowed for it alone).
+    Redirects are followed only within that origin; anything else is recorded as refused."""
+    verified, unverified = clients
+    entry = {"host": origin.split("://", 1)[1], "lab": True, "origin": origin, "addresses": addresses,
+             "status": "unreachable", "reason": None, "attempts": [], "final_url": None, "status_code": None,
+             "title": None, "server": None, "tls_error": None, "tls": None, "tech": [], "tech_evidence": {},
+             "headers": {}, "cookies": [], "dns": None}
+    if not addresses:
+        return {**entry, "status": "unresolved"}
+    client, url, certs = verified, origin + "/", {}
+    for hop in range(MAX_REDIRECTS + 2):  # +1 for the verification-off retry
+        try:
+            response, body = await _fetch(client, url, addresses[0], limiter, certs)
+        except httpx.HTTPError as e:
+            if client is verified and tls_error(e):
+                entry["tls_error"], client = tls_error(e), unverified
+                continue
+            entry["attempts"].append({"url": url, "status_code": None, "error": _error_text(e)})
+            entry["reason"] = _error_text(e)
+            return entry
+        record = {"url": url, "status_code": response.status_code, "error": None}
+        entry["attempts"].append(record)
+        location = response.headers.get("location")
+        if response.is_redirect and location:
+            nxt = urljoin(url, location.strip())
+            try:
+                same = origin_of(nxt) == origin
+            except ValueError:
+                same = False
+            if not same:
+                record["error"] = f"refused: redirect leaves the lab origin ({nxt})"
+            elif hop >= MAX_REDIRECTS:
+                record["error"] = "stopped: too many redirects"
+            else:
+                url = nxt
+                continue
+        _fill(entry, response, body, url)
+        entry["tls"] = certs.get(urlsplit(origin).hostname)
+        return entry
+    entry["reason"] = "no response"
     return entry
 
 
@@ -218,7 +292,8 @@ async def probe_name(name: str, scope: Scope, limiter: Limiter,
                      lookup_cname: Callable[[str], Awaitable[dict]] | None = None) -> dict:
     """Scope check, CNAME lookup, resolve, refuse non-public addresses, then probe. The single entry point per host."""
     base = {"host": name, "addresses": [], "status": "refused", "reason": None, "attempts": [],
-            "final_url": None, "status_code": None, "title": None, "server": None, "tls_error": None, "tls": None, "tech": [], "tech_evidence": {}, "dns": None}
+            "final_url": None, "status_code": None, "title": None, "server": None, "tls_error": None, "tls": None, "tech": [], "tech_evidence": {},
+            "origin": None, "headers": {}, "cookies": [], "dns": None}
     if not scope.allows(name):
         return {**base, "reason": "out of scope"}
     base["dns"] = await lookup_cname(name) if lookup_cname else None  # also for names that won't resolve

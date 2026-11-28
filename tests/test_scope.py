@@ -118,6 +118,42 @@ class ProbeEnforcement(unittest.TestCase):
         self.assertEqual([s[0] for s in seen], ["www.example.com", "www.example.com"])
 
 
+    def test_active_ports_only_on_vetted_hosts(self):
+        from reconkit.ports import TOP_PORTS, check_ports
+
+        class Writer:
+            def close(self): pass
+            async def wait_closed(self): pass
+
+        calls = []
+
+        async def connect(ip, port):
+            calls.append((ip, port))
+            if port == 443:
+                return None, Writer()
+            raise ConnectionRefusedError
+
+        hosts = [
+            {"host": "www.example.com", "status": "ok", "addresses": ["2606:2800::1", "93.184.215.14"]},
+            {"host": "mail.example.com", "status": "unreachable", "addresses": ["93.184.215.15"]},
+            {"host": "internal.example.com", "status": "refused", "addresses": ["10.0.0.1"]},
+            {"host": "gone.example.com", "status": "unresolved", "addresses": []},
+            {"host": "evil.test", "status": "ok", "addresses": ["1.2.3.4"]},  # can't happen; the module re-checks
+            {"host": "mixed.example.com", "status": "ok", "addresses": ["93.184.215.16", "127.0.0.1"]},
+        ]
+
+        async def go():
+            await asyncio.gather(*(check_ports(h, SCOPE, Limiter(10, 0), 1.0, connect) for h in hosts))
+        asyncio.run(go())
+        self.assertEqual(sorted({ip for ip, _ in calls}), ["93.184.215.14", "93.184.215.15"])  # IPv4 first, vetted only
+        self.assertEqual(len(calls), 2 * len(TOP_PORTS))
+        self.assertEqual(hosts[0]["open_ports"], [443])
+        self.assertEqual(hosts[0]["ports_ip"], "93.184.215.14")
+        for h in hosts[2:]:
+            self.assertNotIn("open_ports", h)
+        changes = compare({"hosts": [{**hosts[0], "open_ports": [22]}]}, {"hosts": [hosts[0]]})["changed"]
+        self.assertEqual(changes, [{"host": "www.example.com", "changes": {"open_ports": {"old": [22], "new": [443]}}}])
+
 
 class ReportFeatures(unittest.TestCase):
     """v1.1: not scope logic, kept here to stay at one test file."""

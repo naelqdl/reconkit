@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main, gui]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install . pillow
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      - name: CLI refuses an out-of-scope target (exit 2, nothing sent)
+        run: |
+          echo example.com > scope.txt
+          set +e; reconkit not-in-scope.test --scope scope.txt; code=$?; set -e
+          test "$code" -eq 2
+      - name: Virtual display (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: GUI smoke test (both themes, inline error, screenshot)
+        run: |
+          cat > smoke.py <<'EOF'
+          import sys, time, tkinter as tk
+          from reconkit import gui
+          for name in ("dark", "light"):
+              root = tk.Tk()
+              app = gui.App(root, name)
+              app.run()  # empty domain: must show the inline error and start nothing
+              assert app.proc is None and app.domain_error.cget("text"), "inline error missing"
+              root.update(); time.sleep(1); root.update()
+              x, y, w, h = root.winfo_rootx(), root.winfo_rooty(), root.winfo_width(), root.winfo_height()
+              print(name, "window", w, "x", h)
+              try:
+                  from PIL import ImageGrab
+                  ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(f"gui-{sys.platform}-{name}.png")
+              except Exception as e:  # screen capture can be blocked on hosted runners
+                  print("screenshot skipped:", e)
+              root.destroy()
+          EOF
+          if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a python smoke.py; else python smoke.py; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-${{ matrix.os }}
+          path: gui-*.png
+          if-no-files-found: ignore

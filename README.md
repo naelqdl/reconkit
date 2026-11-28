@@ -13,7 +13,19 @@
 5. **Reads TLS certificates** that pass verification: issuer, expiry date and SANs. In-scope SAN names that crt.sh didn't list are probed too (one extra round, wildcards skipped).
 6. **Finds dangling CNAMEs** with DNS-over-HTTPS: a CNAME whose target doesn't exist (NXDOMAIN). When the target is a known claimable service (Azure, AWS Elastic Beanstalk), it's reported as a takeover *candidate* to verify by hand, never as a confirmed vulnerability.
 7. **Compares runs** with `--compare old/report.json`: new hosts, hosts not seen this run, and changes in status, status code, final URL, TLS error or tech.
-8. **Writes** `report.md` (human-readable) and `report.json` (machine-readable, `schema_version: 1`).
+8. **Runs security checks** and reports each finding with severity, evidence and a fix, grouped in a "Findings" section (`--compare` lists new and fixed findings). Passive checks run on every scan and send nothing extra to the target:
+   - `headers`: HSTS, Content-Security-Policy, clickjacking protection, nosniff, Referrer-Policy, version-leaking `Server`/`X-Powered-By`, and cookies without Secure, HttpOnly or SameSite (cookie names only; values are never stored).
+   - `tls`: invalid or soon-expiring certificates, sites with no HTTPS.
+   - `email`: SPF, DMARC and MTA-STS records for the domain, over DNS-over-HTTPS.
+9. **Runs active checks, only with `--active`**. Every request goes to the vetted IP, follows no redirects, shares the `--rate` and `--concurrency` limits, and counts against a cap of 100 check requests per host:
+   - `ports`: a TCP connect to 24 common ports; databases, RDP, SMB and similar services reachable from the internet are findings. Waits at most 3 s per port.
+   - `wellknown`: exposed `/.git/HEAD`, `/.env` (variable names only), backups, `/server-status`, `phpinfo.php`, `.DS_Store`, missing `security.txt`. A hit needs the file's own signature, not just HTTP 200, and sites that answer 200 for everything are detected.
+   - `cors`: an arbitrary or `null` Origin trusted, with or without credentials (2 requests).
+   - `methods`: TRACE echoing requests, PUT/DELETE advertised by OPTIONS (2 requests; nothing state-changing is sent).
+   - `tls` also checks that plain HTTP redirects to HTTPS (1 request).
+10. **Writes** `report.md`, `report.json` (`schema_version: 2`) and `live-hosts.txt` (the origins that answered, one per line).
+
+reconkit reports indicators of exposure and misconfiguration; it sends no attack payloads and tries no passwords. For payload-based testing of your own site, feed `live-hosts.txt` to a dedicated scanner, e.g. `nuclei -l out/live-hosts.txt` or OWASP ZAP.
 
 Pure Python: `httpx` plus the standard library. No Go, no Docker, no external binaries. Works on Windows, macOS and Linux.
 
@@ -65,12 +77,41 @@ reconkit example.com --scope scope.txt -o out/
 | `--timeout S` | 10 | Seconds per HTTP request |
 | `--doh-url URL` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS (JSON API) resolver used for CNAME lookups |
 | `--compare FILE` | - | A previous `report.json` for the same domain; adds a "What changed" section |
+| `--active` | off | Also run the active checks above |
+| `--lab` | off | Test one local or staging origin (see below) |
+| `--no-discovery` | off | Skip crt.sh and test only the exact hosts listed in the scope file |
+| `--modules LIST` / `--skip LIST` | all | Run only, or skip, these checks (comma-separated names from the list above) |
 
 Exit codes: `0` report written, `2` scope or `--compare` file problem (nothing was sent), `3` crt.sh unavailable after one retry (no report written).
+
+**Testing a local or staging copy (`--lab`).** Private addresses are always refused, except for an origin you list on a `lab` line in the scope file:
+
+```text
+lab http://127.0.0.1:3000
+```
+
+```bash
+reconkit http://127.0.0.1:3000 --scope scope.txt --lab --active -o out/
+```
+
+A lab line allows that exact scheme, host and port only (another port is another origin), runs without discovery, and redirects that leave the origin are refused.
+
+**Proving domain control (optional).** Publish a TXT record `_reconkit.example.com` with the value `reconkit-verify=<anything>`. The report then says "Domain control: verified", which shows a reader that whoever ran the scan controls the domain's DNS. Runs never require it.
 
 HTTPS is tried first with certificate checking on. If the certificate is invalid, the reason is recorded in the TLS column and the page is fetched again without verification. Plain HTTP is tried only when the HTTPS connection fails.
 
 Privacy note: CNAME lookups send every in-scope hostname to the DoH resolver (Cloudflare by default). Point `--doh-url` at a resolver you trust, e.g. `https://dns.google/resolve`. No traffic for those lookups goes to the target.
+
+### Desktop window
+
+`reconkit-gui` opens a small window (tkinter, no extra dependency) to edit the scope file, set the options above, run, follow the log, and open `report.md`. It runs the same CLI underneath, so the same scope checks and exit codes apply. Stop (or Esc) ends a run without writing a report; Ctrl+S saves the scope file. The window follows the Windows light or dark app setting and the Windows text size (Accessibility > Text size). Screen readers can't read tkinter windows; use the CLI with a screen reader.
+
+To build a standalone Windows app (`dist/reconkit.exe`, no Python needed to run it):
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --windowed --name reconkit --icon reconkit/icon.ico --add-data reconkit/icon.ico:reconkit --add-data reconkit/icon.png:reconkit packaging/reconkit_gui.py
+```
 
 ## Sample report
 
@@ -113,7 +154,7 @@ python -m unittest -v tests.test_scope
 
 ## Roadmap
 
-Done: v1.1 fingerprint evidence and `--compare`, v1.2 TLS certificate details, v1.3 CNAME takeover *candidates*. Next: opt-in `--active` modules (port check, security headers and well-known paths, small content discovery). All of them run behind the same scope gate. Exploitation and payloads stay out of scope. See [docs/designs/reconkit.md](docs/designs/reconkit.md).
+Done: v1.1 fingerprint evidence and `--compare`, v1.2 TLS certificate details, v1.3 CNAME takeover *candidates*, v2.0 `--active` port check. Next: more opt-in `--active` modules (security headers and well-known paths, then small content discovery). All of them run behind the same scope gate. Exploitation and payloads stay out of scope. See [docs/designs/reconkit.md](docs/designs/reconkit.md).
 
 ## License
 

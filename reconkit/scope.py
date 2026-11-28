@@ -5,6 +5,7 @@ import ipaddress
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 _LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 
@@ -55,10 +56,35 @@ def is_public(addr: str) -> bool:
     return ip.is_global and not ip.is_multicast
 
 
+def origin_of(url: str) -> str:
+    """'scheme://host:port' of an http(s) URL, lowercased, default port made explicit. Raises ValueError.
+    Hosts may be IPv4 literals or single-label names (localhost): this is only used for lab origins."""
+    parts = urlsplit(url.strip())
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
+        raise ValueError(f"not an http(s) origin: {url!r}")
+    host = parts.hostname.lower().rstrip(".")
+    if is_ip(host):
+        if ipaddress.ip_address(host).version != 4:
+            raise ValueError(f"IPv6 lab origins aren't supported: {url!r}")  # shortcut: v4 + names only; add v6 if asked
+    elif not all(_LABEL.match(label) for label in host.split(".")):
+        raise ValueError(f"not a hostname: {url!r}")
+    port = parts.port or (443 if parts.scheme == "https" else 80)  # .port raises ValueError when out of range
+    return f"{parts.scheme}://{host}:{port}"
+
+
+def lab_origin(url: str) -> str:
+    """origin_of for a scope 'lab' line or --lab target: no path, query or fragment allowed."""
+    parts = urlsplit(url.strip())
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        raise ValueError(f"a lab entry is an origin only (scheme://host:port), got {url!r}")
+    return origin_of(url)
+
+
 @dataclass(frozen=True)
 class Scope:
     exact: frozenset[str]
     wildcard: frozenset[str]  # base domains; "*.example.com" is stored as "example.com"
+    lab: frozenset[str] = frozenset()  # exact origins from 'lab URL' lines, used only with --lab
 
     def allows(self, host: str) -> bool:
         """Whole-label match. A wildcard covers subdomains at any depth, never the apex."""
@@ -68,16 +94,29 @@ class Scope:
             return False
         return h in self.exact or any(h.endswith("." + base) for base in self.wildcard)
 
+    def allows_lab(self, url: str) -> bool:
+        try:
+            return origin_of(url) in self.lab
+        except ValueError:
+            return False
+
     def entries(self) -> list[str]:
-        return sorted(self.exact) + sorted("*." + b for b in self.wildcard)
+        return sorted(self.exact) + sorted("*." + b for b in self.wildcard) + sorted("lab " + o for o in self.lab)
 
 
 def parse_scope(text: str, source: str = "scope") -> Scope:
     exact: set[str] = set()
     wildcard: set[str] = set()
+    lab: set[str] = set()
     for n, raw in enumerate(text.splitlines(), 1):
         line = raw.split("#", 1)[0].strip()
         if not line:
+            continue
+        if line.lower().startswith("lab "):
+            try:
+                lab.add(lab_origin(line[4:]))
+            except ValueError as e:
+                raise ScopeError(f"{source}:{n}: {e}") from None
             continue
         is_wild = line.startswith("*.")
         body = line[2:] if is_wild else line
@@ -88,9 +127,9 @@ def parse_scope(text: str, source: str = "scope") -> Scope:
         except ValueError:
             raise ScopeError(f"{source}:{n}: expected 'example.com' or '*.example.com', got {raw.strip()!r}") from None
         (wildcard if is_wild else exact).add(host)
-    if not exact and not wildcard:
+    if not exact and not wildcard and not lab:
         raise ScopeError(f"{source}: no scope entries (file is empty or only comments)")
-    return Scope(frozenset(exact), frozenset(wildcard))
+    return Scope(frozenset(exact), frozenset(wildcard), frozenset(lab))
 
 
 def load_scope(path: str | Path) -> Scope:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 from collections.abc import Awaitable, Callable
 
@@ -76,6 +77,23 @@ async def resolve(host: str, sem: asyncio.Semaphore,
             return list(dict.fromkeys(str(i[4][0]) for i in infos))
         except (socket.gaierror, OSError, UnicodeError):
             return []
+
+
+async def txt_lookup(name: str, client: httpx.AsyncClient, doh_url: str, sem: asyncio.Semaphore) -> list[str] | None:
+    """TXT strings of name via DNS-over-HTTPS; [] when there are none, None when the lookup itself failed."""
+    async with sem:
+        try:
+            r = await client.get(doh_url, params={"name": name, "type": "TXT"}, headers={"accept": "application/dns-json"})
+            r.raise_for_status()
+            answers = r.json().get("Answer") or []
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+    out = []
+    for a in answers:
+        if isinstance(a, dict) and a.get("type") == 16 and isinstance(a.get("data"), str):
+            parts = re.findall(r'"((?:[^"\\]|\\.)*)"', a["data"])  # long records come as several quoted strings
+            out.append("".join(parts) if parts else a["data"])
+    return out
 
 
 async def cname_lookup(host: str, client: httpx.AsyncClient, doh_url: str, sem: asyncio.Semaphore) -> dict:
