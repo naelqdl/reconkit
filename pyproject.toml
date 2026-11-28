@@ -20,4 +20,7 @@ reconkit = "reconkit.cli:main"
 reconkit-gui = "reconkit.gui:main"
 
 [tool.setuptools]
-packages = ["reconkit"]
+packages = ["reconkit", "reconkit.checks"]
+
+[tool.setuptools.package-data]
+reconkit = ["icon.png", "icon.ico"]
