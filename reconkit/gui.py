@@ -57,7 +57,6 @@ def theme(root: tk.Tk, name: str, scale: float = 1.0) -> dict:
     p.update(ui=(ui, size), mono=(mono, size), heading=(ui, round(11 * scale), "bold"))
     for named in ("TkDefaultFont", "TkTextFont"):  # entries use TkTextFont, not the style font
         font.nametofont(named).configure(family=ui, size=size)
-    line = font.nametofont("TkDefaultFont").metrics("linespace")
     root.configure(bg=p["bg"])
     s = ttk.Style(root)
     s.theme_use("clam")  # the native Windows theme ignores widget colours
@@ -74,7 +73,7 @@ def theme(root: tk.Tk, name: str, scale: float = 1.0) -> dict:
                 font=(p["ui"][0], size, "bold"), padding=(18, 6))
     s.map("Run.TButton", background=[("disabled", p["raised"]), ("pressed", p["accent_down"]), ("active", p["accent_hi"])],
           foreground=[("disabled", p["disabled"])], bordercolor=[("disabled", p["border"]), ("focus", p["text"])])
-    s.configure("TCheckbutton", indicatorsize=round(line * 0.7), indicatorbackground=p["surface"], indicatorforeground=p["accent"],
+    s.configure("TCheckbutton", padding=(0, 4), indicatorbackground=p["surface"], indicatorforeground=p["accent"],
                 upperbordercolor=p["border"], lowerbordercolor=p["border"])
     s.map("TCheckbutton", background=[("active", p["bg"])], indicatorbackground=[("pressed", p["raised"])],
           upperbordercolor=[("focus", p["accent"])], lowerbordercolor=[("focus", p["accent"])])
