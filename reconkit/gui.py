@@ -20,12 +20,13 @@ EXIT_MEANING = {0: "Report written", 2: "Scope or input error, nothing sent", 3:
                 130: "Interrupted"}
 # colour only where it has a job: green = the run action and success, red = errors, blue = progress steps
 PALETTES = {
-    "dark": dict(bg="#0F172A", surface="#1B2336", raised="#273449", hover="#334155", border="#64748B",
-                 text="#E2E8F0", muted="#94A3B8", disabled="#64748B", accent="#22C55E", accent_hi="#4ADE80",
-                 accent_down="#16A34A", on_accent="#0F172A", ok="#4ADE80", error="#F87171", info="#7DD3FC"),
-    "light": dict(bg="#F8FAFC", surface="#FFFFFF", raised="#E2E8F0", hover="#CBD5E1", border="#7C8BA1",
-                  text="#0F172A", muted="#475569", disabled="#94A3B8", accent="#15803D", accent_hi="#166534",
-                  accent_down="#14532D", on_accent="#FFFFFF", ok="#15803D", error="#B91C1C", info="#0369A1"),
+    # night black, moon white, bioluminescent blue
+    "dark": dict(bg="#07090E", surface="#0F141C", raised="#1A2230", hover="#253042", border="#5F7088", text="#E6EBF2",
+                 muted="#9AA6B8", disabled="#5F6B7D", accent="#38C8F0", accent_hi="#6FD9F7", accent_down="#1FA8D4",
+                 on_accent="#07090E", ok="#6FD9F7", error="#F87171", info="#9DB8D9"),
+    "light": dict(bg="#F3F5F9", surface="#FFFFFF", raised="#E1E6EE", hover="#CDD5E1", border="#77859A", text="#07090E",
+                  muted="#475467", disabled="#97A1B0", accent="#00739E", accent_hi="#005F84", accent_down="#004C6A",
+                  on_accent="#FFFFFF", ok="#00739E", error="#B91C1C", info="#2F5683"),
 }
 
 

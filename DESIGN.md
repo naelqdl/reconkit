@@ -2,36 +2,36 @@
 name: reconkit
 description: Desktop front end for a scope-safe recon CLI
 colors:
-  bg: "#0F172A"
-  surface: "#1B2336"
-  raised: "#273449"
-  hover: "#334155"
-  border: "#64748B"
-  text: "#E2E8F0"
-  muted: "#94A3B8"
-  disabled: "#64748B"
-  accent: "#22C55E"
-  accent-hi: "#4ADE80"
-  accent-down: "#16A34A"
-  on-accent: "#0F172A"
-  ok: "#4ADE80"
+  bg: "#07090E"
+  surface: "#0F141C"
+  raised: "#1A2230"
+  hover: "#253042"
+  border: "#5F7088"
+  text: "#E6EBF2"
+  muted: "#9AA6B8"
+  disabled: "#5F6B7D"
+  accent: "#38C8F0"
+  accent-hi: "#6FD9F7"
+  accent-down: "#1FA8D4"
+  on-accent: "#07090E"
+  ok: "#6FD9F7"
   error: "#F87171"
-  info: "#7DD3FC"
-  bg-light: "#F8FAFC"
+  info: "#9DB8D9"
+  bg-light: "#F3F5F9"
   surface-light: "#FFFFFF"
-  raised-light: "#E2E8F0"
-  hover-light: "#CBD5E1"
-  border-light: "#7C8BA1"
-  text-light: "#0F172A"
-  muted-light: "#475569"
-  disabled-light: "#94A3B8"
-  accent-light: "#15803D"
-  accent-hi-light: "#166534"
-  accent-down-light: "#14532D"
+  raised-light: "#E1E6EE"
+  hover-light: "#CDD5E1"
+  border-light: "#77859A"
+  text-light: "#07090E"
+  muted-light: "#475467"
+  disabled-light: "#97A1B0"
+  accent-light: "#00739E"
+  accent-hi-light: "#005F84"
+  accent-down-light: "#004C6A"
   on-accent-light: "#FFFFFF"
-  ok-light: "#15803D"
+  ok-light: "#00739E"
   error-light: "#B91C1C"
-  info-light: "#0369A1"
+  info-light: "#2F5683"
 typography:
   heading:
     fontFamily: "Segoe UI (TkDefaultFont)"
@@ -82,13 +82,13 @@ Recorded from the shipped code in `reconkit/gui.py` (`PALETTES`, `theme()`, `App
 
 ## Overview
 
-A one-window desktop tool in the Operate mode: a form (Target, Scan options, Report), an action bar, and a log. Both themes share the same role names. The window follows the Windows light or dark app setting, and dark is the default elsewhere.
+A one-window desktop tool in the Operate mode: a form (Target, Scan options, Report), an action bar, and a log. Both themes share the same role names. The palette is night black, moon white and bioluminescent blue. The window follows the Windows light or dark app setting, and dark is the default elsewhere: dark mode is a moon-white form on night black, and light mode turns it around, with night-black text on moon white and a deeper blue accent so it keeps its contrast.
 
 ## Colors
 
 - Neutrals (bg, surface, raised, hover, border, the text tones) carry almost all of the window. In dark mode, surfaces get lighter as they rise: bg, then surface, then raised.
-- The accent appears only on the one primary action (Run scan), focus borders, and success. Red is only for errors, blue only for progress steps in the log.
-- Measured contrast: body and muted text are at least 6:1 on their surfaces in both themes. Input borders are 3.3:1 (dark) and 3.5:1 (light). Text on the accent is 7.8:1 (dark) and 5.0:1 (light).
+- The bioluminescent blue accent appears only on the one primary action (Run scan), focus borders, and success. Red is only for errors. Progress steps in the log use a paler, moonlit blue.
+- Measured contrast: body and muted text are at least 6:1 on their surfaces in both themes. Input borders are 3.7:1 (dark) and 3.8:1 (light). Text on the accent is 10.1:1 (dark) and 5.3:1 (light).
 
 ## Typography
 
