@@ -10,12 +10,48 @@ import tkinter as tk
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
 
 from .discover import DEFAULT_DOH_URL
 
 EXIT_MEANING = {0: "report written", 2: "scope or input error, nothing sent", 3: "crt.sh unavailable, no report",
                 130: "interrupted"}
+# dark slate palette, colour only where it has a job: green = the run action and success, red = errors
+BG, SURFACE, RAISED, BORDER = "#0F172A", "#1B2336", "#273449", "#475569"
+TEXT, MUTED, DISABLED = "#E2E8F0", "#94A3B8", "#64748B"
+ACCENT, ACCENT_HI, ACCENT_DOWN, ON_ACCENT = "#22C55E", "#4ADE80", "#16A34A", "#0F172A"
+OK, ERROR, INFO = "#4ADE80", "#F87171", "#7DD3FC"
+BOX = dict(relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT,
+           padx=8, pady=6, bg=SURFACE, fg=TEXT, insertbackground=TEXT, selectbackground=BORDER,
+           selectforeground=TEXT)
+
+
+def theme(root: tk.Tk):
+    root.configure(bg=BG)
+    s = ttk.Style(root)
+    s.theme_use("clam")  # the native Windows theme ignores widget colours
+    s.configure(".", background=BG, foreground=TEXT, fieldbackground=SURFACE, bordercolor=BORDER,
+                lightcolor=BORDER, darkcolor=BORDER, troughcolor=BG, focuscolor=BG, insertcolor=TEXT,
+                selectbackground=BORDER, selectforeground=TEXT, font=("Segoe UI", 10))
+    s.configure("TEntry", padding=(6, 4))
+    s.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
+    s.configure("TButton", background=RAISED, padding=(12, 4))
+    s.map("TButton", background=[("disabled", BG), ("pressed", BORDER), ("active", "#334155")],
+          foreground=[("disabled", DISABLED)], bordercolor=[("focus", ACCENT)])
+    s.configure("Run.TButton", background=ACCENT, foreground=ON_ACCENT, bordercolor=ACCENT,
+                font=("Segoe UI", 10, "bold"), padding=(18, 5))
+    s.map("Run.TButton", background=[("disabled", RAISED), ("pressed", ACCENT_DOWN), ("active", ACCENT_HI)],
+          foreground=[("disabled", DISABLED)], bordercolor=[("disabled", BORDER), ("focus", TEXT)])
+    s.configure("Heading.TLabel", font=("Segoe UI", 11, "bold"))
+    s.configure("Muted.TLabel", foreground=MUTED)
+    s.configure("Vertical.TScrollbar", background=RAISED, troughcolor=SURFACE, arrowcolor=MUTED, bordercolor=SURFACE)
+    s.map("Vertical.TScrollbar", background=[("active", BORDER)])
+    try:  # dark title bar on Windows 10 20H1+ / 11 (DWMWA_USE_IMMERSIVE_DARK_MODE)
+        import ctypes
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(ctypes.c_int(1)), 4)
+    except (AttributeError, OSError):
+        pass
 
 
 def build_argv(domain: str, scope: str, out: str, concurrency: str, rate: str, timeout: str,
@@ -33,52 +69,72 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root, self.proc, self.lines = root, None, queue.Queue()
         root.title("reconkit")
-        root.minsize(720, 560)
-        f = ttk.Frame(root, padding=10)
+        root.minsize(760, 640)
+        theme(root)
+        f = ttk.Frame(root, padding=(16, 12, 16, 16))
         f.pack(fill="both", expand=True)
         f.columnconfigure(1, weight=1)
         self.v = {k: tk.StringVar(value=d) for k, d in [
             ("domain", ""), ("scope", "scope.txt"), ("out", "out"), ("concurrency", "10"), ("rate", "5"),
             ("timeout", "10"), ("doh_url", DEFAULT_DOH_URL), ("compare", "")]}
 
+        # one left edge: labels in column 0, every field and the scope editor start at column 1
+        def heading(r, text):
+            ttk.Label(f, text=text, style="Heading.TLabel").grid(row=r, column=0, columnspan=3, sticky="w",
+                                                                 pady=(0 if r == 0 else 16, 4))
+
         def row(r, label, key, browse=None):
-            ttk.Label(f, text=label).grid(row=r, column=0, sticky="w", pady=2)
-            ttk.Entry(f, textvariable=self.v[key]).grid(row=r, column=1, sticky="ew", pady=2)
+            ttk.Label(f, text=label).grid(row=r, column=0, sticky="w", padx=(0, 12), pady=3)
+            ttk.Entry(f, textvariable=self.v[key]).grid(row=r, column=1, columnspan=1 if browse else 2, sticky="ew", pady=3)
             if browse:
-                ttk.Button(f, text="Browse", command=browse).grid(row=r, column=2, padx=(6, 0))
+                ttk.Button(f, text="Browse...", command=browse).grid(row=r, column=2, padx=(8, 0), pady=3)
 
-        row(0, "Domain", "domain")
-        row(1, "Scope file", "scope", lambda: self.pick("scope", filedialog.askopenfilename, load=True))
+        heading(0, "Target")
+        row(1, "Domain", "domain")
+        row(2, "Scope file", "scope", lambda: self.pick("scope", filedialog.askopenfilename, load=True))
+        self.scope_text = tk.Text(f, height=5, undo=True, font=("Consolas", 10), **BOX)
+        self.scope_text.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(3, 4))
         scope_bar = ttk.Frame(f)
-        scope_bar.grid(row=2, column=1, columnspan=2, sticky="w")
-        ttk.Button(scope_bar, text="Load", command=self.load_scope).pack(side="left")
-        ttk.Button(scope_bar, text="Save", command=self.save_scope).pack(side="left", padx=6)
-        ttk.Label(scope_bar, text="one 'example.com' or '*.example.com' per line").pack(side="left")
-        self.scope_text = tk.Text(f, height=5, undo=True)
-        self.scope_text.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(2, 8))
+        scope_bar.grid(row=4, column=1, columnspan=2, sticky="ew")
+        ttk.Label(scope_bar, text="One 'example.com' or '*.example.com' per line", style="Muted.TLabel").pack(side="left")
+        ttk.Button(scope_bar, text="Save", command=self.save_scope).pack(side="right")
+        ttk.Button(scope_bar, text="Reload", command=self.load_scope).pack(side="right", padx=(0, 8))
 
+        heading(5, "Options")
         opts = ttk.Frame(f)
-        opts.grid(row=4, column=0, columnspan=3, sticky="w")
+        opts.grid(row=6, column=0, columnspan=3, sticky="w", pady=3)
         for label, key in [("Concurrency", "concurrency"), ("Rate (req/s)", "rate"), ("Timeout (s)", "timeout")]:
             ttk.Label(opts, text=label).pack(side="left")
-            ttk.Entry(opts, textvariable=self.v[key], width=6).pack(side="left", padx=(4, 14))
-        row(5, "DoH URL", "doh_url")
-        row(6, "Compare with", "compare", lambda: self.pick("compare", filedialog.askopenfilename))
-        row(7, "Output dir", "out", lambda: self.pick("out", filedialog.askdirectory))
+            ttk.Entry(opts, textvariable=self.v[key], width=6, justify="right").pack(side="left", padx=(6, 20))
+        row(7, "DoH URL", "doh_url")
+        row(8, "Compare with", "compare", lambda: self.pick("compare", filedialog.askopenfilename))
+        row(9, "Output dir", "out", lambda: self.pick("out", filedialog.askdirectory))
 
         bar = ttk.Frame(f)
-        bar.grid(row=8, column=0, columnspan=3, sticky="ew", pady=8)
-        self.run_btn = ttk.Button(bar, text="Run", command=self.run)
+        bar.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(20, 8))
+        self.run_btn = ttk.Button(bar, text="Run scan", command=self.run, style="Run.TButton", default="active")
         self.run_btn.pack(side="left")
         self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop, state="disabled")
-        self.stop_btn.pack(side="left", padx=6)
-        ttk.Button(bar, text="Open report", command=self.open_report).pack(side="left")
-        self.status = ttk.Label(bar, text="Only run against domains you own or are authorized to test.")
-        self.status.pack(side="left", padx=12)
+        self.stop_btn.pack(side="left", padx=8)
+        self.status = ttk.Label(bar, text="Ready", style="Muted.TLabel")
+        self.status.pack(side="left", padx=8)
+        ttk.Button(bar, text="Open report", command=self.open_report).pack(side="right")
 
-        self.log = ScrolledText(f, height=14, state="disabled", font=("Consolas", 9))
-        self.log.grid(row=9, column=0, columnspan=3, sticky="nsew")
-        f.rowconfigure(9, weight=1)
+        log_box = ttk.Frame(f)
+        log_box.grid(row=11, column=0, columnspan=3, sticky="nsew")
+        log_box.columnconfigure(0, weight=1)
+        log_box.rowconfigure(0, weight=1)
+        self.log = tk.Text(log_box, height=12, state="disabled", font=("Consolas", 10), **BOX)
+        self.log.grid(row=0, column=0, sticky="nsew")
+        bar_y = ttk.Scrollbar(log_box, command=self.log.yview)
+        bar_y.grid(row=0, column=1, sticky="ns")
+        self.log.configure(yscrollcommand=bar_y.set)
+        for tag, colour in [("cmd", MUTED), ("step", INFO), ("err", ERROR)]:
+            self.log.tag_configure(tag, foreground=colour)
+        f.rowconfigure(11, weight=1)
+        ttk.Label(f, text="Only run reconkit against domains you own or are explicitly authorized to test.",
+                  style="Muted.TLabel").grid(row=12, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        root.bind("<Return>", lambda e: self.run() if self.proc is None and e.widget is not self.scope_text else None)
         root.protocol("WM_DELETE_WINDOW", self.close)
         if Path(self.v["scope"].get()).is_file():
             self.load_scope()
@@ -111,7 +167,9 @@ class App:
 
     def say(self, text: str):
         self.log.configure(state="normal")
-        self.log.insert("end", text)
+        tag = "cmd" if text.startswith("$ ") else "step" if text.startswith("[") else \
+            "err" if text.startswith(("reconkit:", "Traceback", "error")) else ()
+        self.log.insert("end", text, tag)
         self.log.see("end")
         self.log.configure(state="disabled")
 
@@ -132,7 +190,7 @@ class App:
         threading.Thread(target=self.pump, args=(self.proc,), daemon=True).start()
         self.run_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self.status.configure(text="running ...")
+        self.status.configure(text="Running ...", foreground=MUTED)
 
     def pump(self, proc):
         for line in proc.stdout:
@@ -146,7 +204,7 @@ class App:
                 self.proc = None
                 self.run_btn.configure(state="normal")
                 self.stop_btn.configure(state="disabled")
-                self.status.configure(text=f"exit {item}: {EXIT_MEANING.get(item, 'stopped')}")
+                self.status.configure(text=f"Exit {item}: {EXIT_MEANING.get(item, 'stopped')}", foreground=OK if item == 0 else ERROR)
             else:
                 self.say(item)
         self.root.after(100, self.drain)
